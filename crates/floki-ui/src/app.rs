@@ -891,6 +891,11 @@ impl FlokiApp {
         }
     }
 
+    /// `--about`: open the About window at launch.
+    pub fn open_about(&mut self) {
+        self.about_open = true;
+    }
+
     /// Help windows: search syntax + shortcuts, and About.
     fn help_windows(&mut self, ctx: &egui::Context) {
         egui::Window::new("Search syntax and shortcuts")
@@ -922,6 +927,10 @@ impl FlokiApp {
                         .size(18.0),
                 );
                 ui.label("Instant file-name search for NTFS and ReFS drives.");
+                ui.add_space(6.0);
+                ui.label(format!("Made by {}", author_name()));
+                let repo = env!("CARGO_PKG_REPOSITORY");
+                ui.hyperlink_to(repo.trim_start_matches("https://"), repo);
                 ui.add_space(6.0);
                 caption(ui, &service);
             });
@@ -2237,6 +2246,12 @@ fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(14.0);
     ui.label(RichText::new(title).family(theme::semibold()).size(15.0));
     ui.add_space(4.0);
+}
+
+/// The author's name from `Cargo.toml` (`"Name <email>"` → `"Name"`).
+fn author_name() -> &'static str {
+    let authors = env!("CARGO_PKG_AUTHORS");
+    authors.split('<').next().unwrap_or(authors).trim()
 }
 
 /// Small muted explanation line under a setting.

@@ -1,8 +1,11 @@
 //! Embeds the Floki icon in `floki.exe` (Explorer, taskbar, Alt+Tab), drawn
-//! by `src/icon_art.rs` and written as a multi-size `.ico` at build time.
+//! by `src/icon_art.rs` and written as a multi-size `.ico` at build time,
+//! plus version and author details (Properties → Details).
 
 #[path = "src/icon_art.rs"]
 mod icon_art;
+#[path = "../../build-support/version_rc.rs"]
+mod version_rc;
 
 use std::path::PathBuf;
 
@@ -12,6 +15,7 @@ const SIZES: [u32; 8] = [16, 20, 24, 32, 40, 48, 64, 256];
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/icon_art.rs");
+    println!("cargo:rerun-if-changed=../../build-support/version_rc.rs");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
@@ -20,7 +24,8 @@ fn main() {
     std::fs::write(&ico, ico_file(&SIZES)).expect("write floki.ico");
     let rc = out.join("floki.rc");
     let ico_path = ico.to_string_lossy().replace('\\', "\\\\");
-    std::fs::write(&rc, format!("1 ICON \"{ico_path}\"\n")).expect("write floki.rc");
+    let version = version_rc::version_rc("floki", "Floki search window");
+    std::fs::write(&rc, format!("1 ICON \"{ico_path}\"\n{version}")).expect("write floki.rc");
     embed_resource::compile(&rc, embed_resource::NONE)
         .manifest_optional()
         .expect("compile the icon resource");

@@ -7,7 +7,8 @@ while you are still typing.
 
 It is built in the spirit of [voidtools Everything](https://www.voidtools.com/)
 (and uses the same query syntax), with a tighter budget for memory and CPU.
-Floki is an independent project, not affiliated with voidtools.
+Floki is an independent project by [Nikko Gonzales](https://github.com/nikkoxgonzales),
+not affiliated with voidtools.
 
 ![Floki searching C:\Windows\System32 for "shell"](docs/screenshot.png)
 
@@ -68,7 +69,7 @@ check a download, compare it with `SHA256SUMS.txt` on the release, or verify
 where it was built:
 
 ```sh
-gh attestation verify floki-v0.1.0-windows-x64.zip --repo nikkoxgonzales/floki
+gh attestation verify floki-v0.1.1-windows-x64.zip --repo nikkoxgonzales/floki
 ```
 
 ## Build from source
@@ -260,6 +261,13 @@ launcher plugins.
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+## Author
+
+Floki is written and maintained by **Nikko Gonzales**
+([@nikkoxgonzales](https://github.com/nikkoxgonzales),
+[nikkoxgonzales@gmail.com](mailto:nikkoxgonzales@gmail.com)). Bug reports
+and ideas are welcome in [Issues](https://github.com/nikkoxgonzales/floki/issues).
 
 ## License
 

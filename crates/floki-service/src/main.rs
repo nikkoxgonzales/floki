@@ -6,7 +6,12 @@ use floki_proto::{Request, Response};
 /// Floki indexer daemon: builds the file-name index from NTFS volumes and
 /// serves search requests over the named pipe.
 #[derive(Debug, Parser)]
-#[command(name = "flokid", version, about = "Floki indexer daemon")]
+#[command(
+    name = "flokid",
+    version,
+    about = "Floki indexer daemon",
+    after_help = concat!("Floki by Nikko Gonzales: ", env!("CARGO_PKG_REPOSITORY"))
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

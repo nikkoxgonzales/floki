@@ -49,6 +49,7 @@ const RSS_PER_MILLION_GATE_BYTES: f64 = 70.0 * 1024.0 * 1024.0;
     name = "flk",
     version,
     about = "Floki command-line search client (talks to flokid over a named pipe)",
+    after_help = concat!("Floki by Nikko Gonzales: ", env!("CARGO_PKG_REPOSITORY")),
     arg_required_else_help = true
 )]
 struct Cli {

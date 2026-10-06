@@ -46,6 +46,8 @@ fn main() -> anyhow::Result<()> {
         _ => None,
     });
     let search = std::env::args().find_map(|a| a.strip_prefix("--search=").map(str::to_owned));
+    // `--about` opens the About window (also how it gets screenshot-checked).
+    let about = std::env::args().any(|a| a == "--about");
     // `--theme=dark|light|system` overrides the stored theme for this run.
     let theme_arg =
         std::env::args().find_map(|a| a.strip_prefix("--theme=").map(theme::ThemeMode::from_str));
@@ -119,6 +121,9 @@ fn main() -> anyhow::Result<()> {
             }
             app.set_mcp_config(floki_mcp::McpConfig::load());
             app.launch(settings, search);
+            if about {
+                app.open_about();
+            }
             Ok(Box::new(app))
         }),
     )

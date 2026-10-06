@@ -3,6 +3,8 @@ name = "floki-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 
 [[bin]]
@@ -21,3 +23,6 @@ serde_json.workspace = true
 
 [lints]
 workspace = true
+
+[build-dependencies]
+embed-resource.workspace = true
