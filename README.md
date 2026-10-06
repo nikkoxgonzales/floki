@@ -54,7 +54,24 @@ Measured on a 16-core desktop with five drives (four NTFS, one ReFS Dev Drive):
   indexer over a named pipe.
 - To build: stable Rust 1.95 or newer with the MSVC toolchain.
 
-## Build
+## Download
+
+Grab `floki-<version>-windows-x64.zip` from
+[Releases](https://github.com/nikkoxgonzales/floki/releases), unzip it to a
+folder you'll keep (for example `%LOCALAPPDATA%\Programs\Floki`), and continue
+with [Getting started](#getting-started).
+
+The binaries are built from the tagged source by GitHub Actions and are not
+code-signed yet, so Windows SmartScreen may warn on first run (*More info* →
+*Run anyway*) and the indexer's admin prompt shows an unknown publisher. To
+check a download, compare it with `SHA256SUMS.txt` on the release, or verify
+where it was built:
+
+```sh
+gh attestation verify floki-v0.1.0-windows-x64.zip --repo nikkoxgonzales/floki
+```
+
+## Build from source
 
 ```sh
 git clone https://github.com/nikkoxgonzales/floki
