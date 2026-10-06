@@ -1380,7 +1380,7 @@ dependencies = [
 
 [[package]]
 name = "floki-bench"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1392,7 +1392,7 @@ dependencies = [
 
 [[package]]
 name = "floki-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1407,7 +1407,7 @@ dependencies = [
 
 [[package]]
 name = "floki-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "memchr",
  "memmap2",
@@ -1422,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "floki-mcp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "dirs",
  "floki-proto",
@@ -1435,7 +1435,7 @@ dependencies = [
 
 [[package]]
 name = "floki-ntfs"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "thiserror 2.0.20",
  "tracing",
@@ -1444,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "floki-proto"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "interprocess",
  "serde",
@@ -1454,7 +1454,7 @@ dependencies = [
 
 [[package]]
 name = "floki-service"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "floki-ui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "dirs",

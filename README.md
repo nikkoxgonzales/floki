@@ -69,7 +69,7 @@ check a download, compare it with `SHA256SUMS.txt` on the release, or verify
 where it was built:
 
 ```sh
-gh attestation verify floki-v0.1.1-windows-x64.zip --repo nikkoxgonzales/floki
+gh attestation verify floki-v0.1.2-windows-x64.zip --repo nikkoxgonzales/floki
 ```
 
 ## Build from source
