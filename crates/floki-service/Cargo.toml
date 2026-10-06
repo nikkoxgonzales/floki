@@ -1,0 +1,34 @@
+[package]
+name = "floki-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "flokid"
+path = "src/main.rs"
+
+[lib]
+name = "floki_service"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+dirs.workspace = true
+widestring.workspace = true
+windows-sys.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+interprocess.workspace = true
+floki-core.workspace = true
+floki-ntfs.workspace = true
+floki-proto.workspace = true
+
+[dev-dependencies]
+floki-core.workspace = true
+floki-proto.workspace = true
+
+[lints]
+workspace = true

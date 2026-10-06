@@ -1,0 +1,18 @@
+[package]
+name = "floki-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+dirs.workspace = true
+floki-proto.workspace = true
+tiny_http.workspace = true
+getrandom.workspace = true
+
+[lints]
+workspace = true

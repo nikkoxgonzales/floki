@@ -1,0 +1,37 @@
+[package]
+name = "floki-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "floki"
+path = "src/main.rs"
+
+[[example]]
+name = "fake_server"
+path = "examples/fake_server.rs"
+
+[dependencies]
+eframe = { workspace = true, features = ["persistence"] }
+egui.workspace = true
+egui_extras.workspace = true
+tray-icon.workspace = true
+global-hotkey.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+interprocess.workspace = true
+dirs.workspace = true
+windows-sys.workspace = true
+floki-proto.workspace = true
+floki-ntfs.workspace = true
+floki-mcp.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+embed-resource.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,2 @@
+# Keep shell scripts LF on all platforms — they break on Windows with CRLF
+*.sh text eol=lf
