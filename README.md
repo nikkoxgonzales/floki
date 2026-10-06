@@ -265,9 +265,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 ## Author
 
 Floki is written and maintained by **Nikko Gonzales**
-([@nikkoxgonzales](https://github.com/nikkoxgonzales),
-[nikkoxgonzales@gmail.com](mailto:nikkoxgonzales@gmail.com)). Bug reports
-and ideas are welcome in [Issues](https://github.com/nikkoxgonzales/floki/issues).
+([@nikkoxgonzales](https://github.com/nikkoxgonzales)). Bug reports and ideas
+are welcome in [Issues](https://github.com/nikkoxgonzales/floki/issues).
 
 ## License
 
