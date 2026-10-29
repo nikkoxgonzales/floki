@@ -270,14 +270,20 @@ fn oversize_error() -> io::Error {
 
 /// Discard bytes up to and including the next newline (or EOF) so a rejected
 /// oversize line does not poison subsequent reads.
+/// Consumes the reader's buffer in place: `read_until` would collect the
+/// whole (possibly endless) line in memory first.
 fn drain_line<R: BufRead>(r: &mut R) -> io::Result<()> {
-    let mut buf = Vec::new();
     loop {
-        buf.clear();
-        let n = r.read_until(b'\n', &mut buf)?;
-        if n == 0 || buf.last() == Some(&b'\n') {
+        let buf = r.fill_buf()?;
+        if buf.is_empty() {
             return Ok(());
         }
+        if let Some(i) = buf.iter().position(|&b| b == b'\n') {
+            r.consume(i + 1);
+            return Ok(());
+        }
+        let n = buf.len();
+        r.consume(n);
     }
 }
 
@@ -300,6 +306,46 @@ impl Client {
         let stream = LocalSocketStream::connect(name)?;
         Ok(Self {
             reader: io::BufReader::new(stream),
+        })
+    }
+
+    /// [`call`](Self::call) that gives up after `timeout`: a watchdog thread
+    /// cancels the pipe's pending I/O (`CancelIoEx`; the pipe is overlapped,
+    /// so `CancelSynchronousIo` would not reach it), so a stalled indexer
+    /// cannot hold every later request behind it. After a timeout the
+    /// connection is mid-frame: drop this client and reconnect.
+    pub fn call_timeout(
+        &mut self,
+        request: &Request,
+        timeout: std::time::Duration,
+    ) -> io::Result<Response> {
+        use std::os::windows::io::{AsHandle, AsRawHandle};
+        use windows_sys::Win32::System::IO::CancelIoEx;
+
+        // Windows builds have only the named-pipe variant.
+        let interprocess::local_socket::Stream::NamedPipe(pipe) = self.reader.get_ref();
+        let handle = pipe.as_handle().as_raw_handle() as usize;
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let watchdog = std::thread::spawn(move || {
+            if done_rx.recv_timeout(timeout) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+                // SAFETY: the handle stays open until this thread is joined
+                // (the stream outlives the join below).
+                unsafe { CancelIoEx(handle as _, std::ptr::null()) };
+            }
+        });
+        let result = self.call(request);
+        drop(done_tx);
+        let _ = watchdog.join();
+        const ERROR_OPERATION_ABORTED: i32 = 995;
+        result.map_err(|e| {
+            if e.raw_os_error() == Some(ERROR_OPERATION_ABORTED) {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("flokid did not answer within {} s", timeout.as_secs()),
+                )
+            } else {
+                e
+            }
         })
     }
 
@@ -560,5 +606,43 @@ mod tests {
         let mut cursor = io::BufReader::new(input.as_slice());
         let err = read_frame::<_, Request>(&mut cursor).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn call_timeout_gives_up_on_a_silent_server() {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+        let pipe = format!(r"\\.\pipe\floki-timeout-test-{}", std::process::id());
+        let listener = ListenerOptions::new()
+            .name(pipe.as_str().to_fs_name::<GenericFilePath>().unwrap())
+            .create_sync()
+            .unwrap();
+        // Accept, read nothing, answer nothing.
+        let server = std::thread::spawn(move || {
+            let conn = listener.accept().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            drop(conn);
+        });
+        std::env::set_var("FLOKI_PIPE", &pipe);
+        let mut client = Client::connect().unwrap();
+        let started = std::time::Instant::now();
+        let err = client
+            .call_timeout(&Request::Status {}, std::time::Duration::from_millis(300))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut, "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_millis(1200));
+        drop(client);
+        let _ = server.join();
+    }
+
+    #[test]
+    fn the_frame_after_an_oversize_line_still_reads() {
+        let mut input = vec![b'a'; MAX_FRAME_BYTES + 16];
+        input.push(b'\n');
+        write_frame(&mut input, &Request::Status {}).unwrap();
+        let mut cursor = io::BufReader::new(input.as_slice());
+        assert!(read_frame::<_, Request>(&mut cursor).is_err());
+        let next: Option<Request> = read_frame(&mut cursor).unwrap();
+        assert_eq!(next, Some(Request::Status {}));
     }
 }

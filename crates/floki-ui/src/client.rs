@@ -15,6 +15,10 @@ use floki_proto::{HitRow, IndexState, Request, Response, Sort};
 /// as the list scrolls near its end.
 pub const PAGE_ROWS: u32 = 1000;
 
+/// Longest wait for one indexer reply. A date sort reads up to 200,000
+/// files' times (bounded well below this); past it the indexer is stalled.
+const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Rows for a date-ordered search, fetched in one request: the service reads
 /// every match's timestamps per request, so paging would repeat that cost.
 pub const TIME_SORT_ROWS: u32 = 10_000;
@@ -621,8 +625,10 @@ fn call(
         }
     }
     let client = slot.as_mut().expect("just connected");
+    // Bounded so a stalled indexer shows an error instead of an endless
+    // "Searching…"; the caller drops the connection on any error.
     client
-        .call(req)
+        .call_timeout(req, CALL_TIMEOUT)
         .map_err(|e| format!("pipe call failed: {e}"))
 }
 

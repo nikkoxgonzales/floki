@@ -14,6 +14,7 @@ thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 interprocess.workspace = true
+windows-sys.workspace = true
 
 [lints]
 workspace = true

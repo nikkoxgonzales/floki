@@ -24,8 +24,10 @@ impl Backend for PipeBackend {
              window, then retry."
                 .to_owned()
         })?;
+        // Bounded: a stalled indexer must not hold the MCP server's one
+        // serving thread (and every client behind it) forever.
         client
-            .call(request)
+            .call_timeout(request, std::time::Duration::from_secs(30))
             .map_err(|e| format!("The Floki indexer stopped answering ({e}). Retry shortly."))
     }
 

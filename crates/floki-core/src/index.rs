@@ -777,6 +777,18 @@ impl Index {
         self.epoch
     }
 
+    /// Enable or disable searching `letter`; false when it is not indexed.
+    /// Bumps the mutation counter, because cached `path:` verdicts are keyed
+    /// on it and would otherwise keep serving the old volume set.
+    pub fn set_volume_enabled(&mut self, letter: char, enabled: bool) -> bool {
+        let Some(vol) = self.volumes.iter_mut().find(|v| v.letter == letter) else {
+            return false;
+        };
+        vol.enabled = enabled;
+        self.bump_mutation();
+        true
+    }
+
     /// Content-change counter: bumps on every entry/sorted-array mutation
     /// (`push`, `apply`, `compact`, rebuilds, loads). Equal values mean the
     /// entries are unchanged (volume records and policy are not covered).

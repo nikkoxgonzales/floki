@@ -77,6 +77,9 @@ pub fn tools() -> Value {
     ])
 }
 
+/// Most messages one JSON-RPC batch may hold.
+const MAX_BATCH: usize = 32;
+
 /// Handle one JSON-RPC message (or a batch). `None` means nothing to send
 /// back (notifications, an all-notification batch).
 #[must_use]
@@ -84,6 +87,10 @@ pub fn handle(msg: &Value, backend: &dyn Backend) -> Option<Value> {
     if let Value::Array(batch) = msg {
         if batch.is_empty() {
             return Some(error(&Value::Null, -32600, "Empty batch"));
+        }
+        // One POST must not fan out into thousands of indexer calls.
+        if batch.len() > MAX_BATCH {
+            return Some(error(&Value::Null, -32600, "Batch too large"));
         }
         let replies: Vec<Value> = batch.iter().filter_map(|m| handle(m, backend)).collect();
         return (!replies.is_empty()).then_some(Value::Array(replies));

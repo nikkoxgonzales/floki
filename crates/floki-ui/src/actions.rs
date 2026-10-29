@@ -115,18 +115,13 @@ pub fn open_with(path: &str) -> io::Result<()> {
     if shell_execute("openas", path, None).is_ok() {
         return Ok(());
     }
-    let status = std::process::Command::new("rundll32.exe")
+    // Launch only: waiting would freeze the window until the dialog closes.
+    std::process::Command::new("rundll32.exe")
         .arg("shell32.dll,OpenAs_RunDLL")
         .arg(path)
-        .status()
+        .spawn()
         .map_err(|e| io::Error::other(format!("failed to launch OpenAs dialog: {e}")))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!(
-            "OpenAs dialog exited with {status}"
-        )))
-    }
+    Ok(())
 }
 
 /// Reveal a path in Explorer (`explorer.exe /select,<path>`).
@@ -134,15 +129,13 @@ pub fn open_with(path: &str) -> io::Result<()> {
 pub fn open_containing_folder(path: &str) -> io::Result<()> {
     use std::process::Command;
 
-    let status = Command::new("explorer.exe")
+    // Launch only: waiting blocks the window, and explorer.exe exits 1 even
+    // after a successful `/select`, so its status says nothing.
+    Command::new("explorer.exe")
         .arg(format!("/select,{path}"))
-        .status()
+        .spawn()
         .map_err(|e| io::Error::other(format!("failed to launch explorer: {e}")))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!("explorer exited with {status}")))
-    }
+    Ok(())
 }
 
 /// Relaunch a program elevated (`ShellExecuteW` verb `runas` triggers UAC).
@@ -179,12 +172,14 @@ pub fn show_properties(path: &str) -> io::Result<()> {
 }
 
 /// Move a file or directory to the Recycle Bin (`SHFileOperationW`
-/// `FO_DELETE` with `FOF_ALLOWUNDO | FOF_NOCONFIRMATION`). Never deletes
-/// permanently; directories are handled by the shell.
+/// `FO_DELETE` with `FOF_ALLOWUNDO | FOF_NOCONFIRMATION`). An item the bin
+/// cannot take (too large, no bin on that drive) would then be deleted
+/// permanently without a word; `FOF_WANTNUKEWARNING` makes the shell ask
+/// first. Directories are handled by the shell.
 #[cfg(windows)]
 pub fn recycle_to_bin(path: &str) -> io::Result<()> {
     use windows_sys::Win32::UI::Shell::{
-        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FO_DELETE,
+        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_WANTNUKEWARNING, FO_DELETE,
     };
 
     let from = to_wide_double_nul(path);
@@ -194,7 +189,7 @@ pub fn recycle_to_bin(path: &str) -> io::Result<()> {
         let mut op: windows_sys::Win32::UI::Shell::SHFILEOPSTRUCTW = std::mem::zeroed();
         op.wFunc = FO_DELETE;
         op.pFrom = from.as_ptr();
-        op.fFlags = (FOF_ALLOWUNDO | FOF_NOCONFIRMATION) as u16;
+        op.fFlags = (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING) as u16;
         SHFileOperationW(&mut op)
     };
     if rc != 0 {

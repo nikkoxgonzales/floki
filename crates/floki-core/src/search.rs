@@ -1352,10 +1352,31 @@ impl ArenaPlan {
             | Matcher::Not(_)
             | Matcher::Ext(_)
             | Matcher::PathSub { .. }
+            | Matcher::Parent { .. }
             | Matcher::IsDir
             | Matcher::IsFile => None,
         }
     }
+}
+
+/// The `(volume, frn)` of the folder at full path `path` (no trailing
+/// separator; `C:` is the volume root). One by-name lookup of the last
+/// component, then a path compare on each same-named folder.
+fn resolve_folder(index: &Index, path: &str) -> Option<(u8, u64)> {
+    let b = path.as_bytes();
+    if b.len() == 2 && b[1] == b':' && b[0].is_ascii_alphabetic() {
+        let letter = (b[0] as char).to_ascii_uppercase();
+        let vol = index.volumes.iter().position(|v| v.letter == letter)?;
+        return Some((vol as u8, index.volumes[vol].root_frn));
+    }
+    let name = path.rsplit('\\').next()?;
+    let (_, ids, _) = whole_lookup(index, fold(name).as_bytes(), false, usize::MAX, true);
+    ids.into_iter().find_map(|id| {
+        let e = index.entries.get(id as usize)?;
+        let vol = *index.entry_vol.get(id as usize)?;
+        (e.is_dir() && !e.is_tombstone() && eq_insensitive(&index.path(id), path, &fold(path)))
+            .then_some((vol, e.frn))
+    })
 }
 
 /// Aggregate block presence mask over a chunk's byte range (OR of the
@@ -2743,9 +2764,21 @@ pub fn count(index: &Index, q: &Query, prev: Option<&[Hit]>) -> u64 {
 /// conservatively rejected: quotes and groups can delete or rewrite an
 /// earlier term (so a string prefix need not be a semantic subset), and `|`
 /// always broadens.
+///
+/// Typing more of the last word narrows only when that word is a plain
+/// substring: `ext:r` → `ext:rs`, `*.r` → `*.rs` or `!` → `!b` change what
+/// the word means, so those need the word finished (whitespace) first.
 #[must_use]
 pub fn prev_reusable(prev_q: &Query, next_q: &Query) -> bool {
-    next_q.raw.starts_with(prev_q.raw.as_str())
+    let Some(rest) = next_q.raw.strip_prefix(prev_q.raw.as_str()) else {
+        return false;
+    };
+    let word_done = rest.is_empty()
+        || rest.starts_with(char::is_whitespace)
+        || prev_q.raw.ends_with(char::is_whitespace);
+    let last_word = prev_q.raw.rsplit(char::is_whitespace).next().unwrap_or("");
+    let plain_word = !last_word.contains([':', '*', '?', '!']);
+    (word_done || plain_word)
         && !prev_q.has_or()
         && !prev_q.has_not()
         && !next_q.has_or()
@@ -3022,6 +3055,13 @@ enum Matcher {
         has_separator: bool,
         memo: OnceLock<PathMemo>,
     },
+    /// `parent:` — direct children of one folder, by full path. The folder
+    /// resolves to `(volume, frn)` once per query, so each entry is an O(1)
+    /// parent-link compare.
+    Parent {
+        path: String,
+        folder: OnceLock<Option<(u8, u64)>>,
+    },
     IsDir,
     IsFile,
 }
@@ -3136,6 +3176,10 @@ impl Matcher {
                         memo: OnceLock::new(),
                     }
                 }
+                TermKind::Parent(p) => Matcher::Parent {
+                    path: p.trim_end_matches(['\\', '/']).replace('/', "\\"),
+                    folder: OnceLock::new(),
+                },
                 TermKind::IsDir => Matcher::IsDir,
                 TermKind::IsFile => Matcher::IsFile,
             },
@@ -3153,6 +3197,7 @@ impl Matcher {
             Matcher::Glob { .. } | Matcher::GlobFast { .. } => 3,
             Matcher::RegexMatch { .. } | Matcher::RegexAffix { .. } => 4,
             Matcher::PathSub { .. } => 5,
+            Matcher::Parent { .. } => 2,
             Matcher::Not(n) => n.cost(),
             Matcher::And(v) | Matcher::Or(v) => v.iter().map(Matcher::cost).max().unwrap_or(0),
         }
@@ -3241,6 +3286,16 @@ impl Matcher {
                     p.contains(needle.as_str())
                 } else {
                     contains_insensitive(p, needle)
+                }
+            }
+            Matcher::Parent { path, folder } => {
+                match folder.get_or_init(|| resolve_folder(index, path)) {
+                    Some((vol, frn)) => {
+                        entry.parent_frn == *frn
+                            && entry.frn != *frn
+                            && index.entry_vol.get(id as usize) == Some(vol)
+                    }
+                    None => false,
                 }
             }
             Matcher::IsDir => entry.flags & DIRECTORY != 0,
@@ -4227,6 +4282,21 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].vol, 1);
         assert_eq!(ix.len(), 4);
+    }
+
+    #[test]
+    fn disabling_a_volume_invalidates_cached_path_verdicts() {
+        let mut ix = two_volume_index();
+        let q = crate::query::parse("path:shared");
+        // Twice: the second run is served from the path-verdict cache.
+        assert_eq!(count(&ix, &q, None), 2);
+        assert_eq!(count(&ix, &q, None), 2);
+        let before = ix.mutation();
+        assert!(ix.set_volume_enabled('C', false));
+        assert_ne!(ix.mutation(), before, "cache key must change");
+        assert_eq!(count(&ix, &q, None), 1);
+        assert!(ix.set_volume_enabled('C', true));
+        assert_eq!(count(&ix, &q, None), 2);
     }
 
     fn lit(pattern: &str, case_sensitive: bool) -> Option<String> {

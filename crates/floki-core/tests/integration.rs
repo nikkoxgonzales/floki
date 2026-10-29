@@ -719,6 +719,19 @@ fn search_pool_threads_smoke() {
 // F2: prev_reusable rejects broadening OR and quotes/groups; plain extension
 // stays reusable and narrows exactly.
 #[test]
+fn prev_reusable_rejects_extending_an_operator_word() {
+    // Each of these changes the last word's meaning, not just narrows it.
+    assert!(!prev_reusable(&parse("ext:r"), &parse("ext:rs")));
+    assert!(!prev_reusable(&parse("ext:rs"), &parse("ext:rs;toml")));
+    assert!(!prev_reusable(&parse("*.r"), &parse("*.rs")));
+    assert!(!prev_reusable(&parse("wfn:fo"), &parse("wfn:foo")));
+    assert!(!prev_reusable(&parse("a !"), &parse("a !b")));
+    // A finished operator word followed by more words still narrows.
+    assert!(prev_reusable(&parse("ext:rs"), &parse("ext:rs main")));
+    assert!(prev_reusable(&parse("ext:rs "), &parse("ext:rs main")));
+}
+
+#[test]
 fn prev_reusable_rejects_or_broadening() {
     assert!(!prev_reusable(&parse("aaa"), &parse("aaa|bbb")));
     assert!(!prev_reusable(&parse("aaa"), &parse("aaa bbb\"")));
@@ -1949,4 +1962,55 @@ fn soak_8m_fold_rss_flat() {
         max_gap - min_gap <= 10.0,
         "RSS gap wandered {min_gap:.1}..{max_gap:.1} MB across {CYCLES} fold cycles"
     );
+}
+
+/// `sample_index` plus a D: volume, with the sorted arrays built so
+/// `parent:` can resolve folders by name.
+fn two_drive_index() -> Index {
+    let mut ix = sample_index();
+    ix.add_volume(test_volume('D', 500));
+    ix.push(1, 500, 500, "", DIRECTORY);
+    ix.push(1, 501, 500, "Music", DIRECTORY);
+    ix.push(1, 502, 501, "song.mp3", 0);
+    ix.push(1, 503, 501, "Live", DIRECTORY);
+    ix.push(1, 504, 503, "encore.FLAC", 0);
+    ix.finalize();
+    ix.rebuild_by_name();
+    ix
+}
+
+fn sorted_names(ix: &Index, q: &str) -> Vec<String> {
+    let mut v = names_of(ix, &search(ix, &parse(q), &all_opts(), None));
+    v.sort();
+    v
+}
+
+#[test]
+fn type_macros_expand_to_extension_lists() {
+    let ix = two_drive_index();
+    assert_eq!(sorted_names(&ix, "audio:"), ["encore.FLAC", "song.mp3"]);
+    assert_eq!(sorted_names(&ix, "pic:"), ["photo.PNG"]);
+    assert_eq!(sorted_names(&ix, "exe:"), ["setup.exe"]);
+    assert_eq!(sorted_names(&ix, "audio:song"), ["song.mp3"]);
+}
+
+#[test]
+fn drive_terms_limit_to_that_drive() {
+    let ix = two_drive_index();
+    assert_eq!(
+        sorted_names(&ix, "d: file:"),
+        ["encore.FLAC", "song.mp3"]
+    );
+    assert_eq!(sorted_names(&ix, "C: mp3"), Vec::<String>::new());
+    assert_eq!(sorted_names(&ix, r"d:\music\live"), ["Live", "encore.FLAC"]);
+}
+
+#[test]
+fn parent_matches_direct_children_only() {
+    let ix = two_drive_index();
+    assert_eq!(sorted_names(&ix, r"parent:D:\Music"), ["Live", "song.mp3"]);
+    assert_eq!(sorted_names(&ix, r"parent:d:\music\"), ["Live", "song.mp3"]);
+    assert_eq!(sorted_names(&ix, "parent:D:"), ["Music"]);
+    assert_eq!(sorted_names(&ix, r"parent:C:\src rs"), ["lib.rs", "main.rs"]);
+    assert_eq!(sorted_names(&ix, r"parent:C:\nowhere"), Vec::<String>::new());
 }

@@ -15,9 +15,11 @@
 //! `frn_index` (every entry id sorted by `(vol, frn)`, 4 B/entry) follows
 //! `entry_vol` in v2 files; v1 files (`b"FLOKIDX1"`, no `frn_index` bytes)
 //! still load by rebuilding it in one sort.
-//! Written atomically (`.tmp` + rename). Loaded with a plain read, which is
-//! fast enough for 1 M entries (< 300 ms); mmap via `memmap2` is left for a
-//! later pass.
+//! Written atomically (`.tmp` + rename). Loaded through a read-only memory
+//! map: a plain read held a private copy of the whole file (~700 MB at 13.5M
+//! entries) on top of the structures built from it, doubling peak memory at
+//! startup. Mapped pages are file-backed, so Windows can drop them, and the
+//! map closes before the first save renames over the file.
 
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -247,11 +249,16 @@ impl Index {
     /// rejecting the file. Only a bad magic, truncated entries/arena, or an
     /// out-of-range id is a hard error.
     pub fn load(path: &Path) -> Result<Self, CoreError> {
-        let data = fs::read(path)?;
-        let bad = |msg: &str| CoreError::Corrupt(msg.to_string());
-        if data.len() < MAGIC_V2.len() + 4 {
+        let file = File::open(path)?;
+        // An empty file cannot be mapped; it is a bad file either way.
+        if file.metadata()?.len() < (MAGIC_V2.len() + 4) as u64 {
             return Err(CoreError::BadMagic);
         }
+        // SAFETY: read-only map of a file only flokid writes, and flokid
+        // replaces it by rename (never in place), so the bytes cannot change
+        // under the map; the map is dropped when this function returns.
+        let data = unsafe { memmap2::Mmap::map(&file)? };
+        let bad = |msg: &str| CoreError::Corrupt(msg.to_string());
         let is_v1 = &data[..8] == MAGIC_V1;
         let is_v2 = &data[..8] == MAGIC_V2;
         if !is_v1 && !is_v2 {

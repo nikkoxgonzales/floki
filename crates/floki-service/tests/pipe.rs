@@ -71,6 +71,10 @@ fn pipe_serves_synthetic_index() {
     // The server's explicit security descriptor must build: it is what lets
     // an unelevated client connect to the elevated daemon.
     floki_service::server::pipe_security_descriptor().expect("pipe security descriptor must build");
+    // Scoped to this account's SID, not every authenticated user.
+    let sddl = floki_service::server::pipe_sddl().unwrap();
+    assert!(sddl.starts_with("D:(A;;GRGW;;;S-1-5-"), "{sddl}");
+    assert!(!sddl.contains(";AU)"), "{sddl}");
 
     let pipe = unique_pipe();
     std::env::set_var("FLOKI_PIPE", &pipe);

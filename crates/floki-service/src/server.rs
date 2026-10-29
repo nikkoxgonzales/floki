@@ -24,12 +24,62 @@ use interprocess::os::windows::{
 
 use crate::state::{is_shutdown, request_shutdown, rss_bytes, PrevEntry, Shared};
 
-/// SDDL for the pipe: generic read+write for authenticated users plus a low
-/// integrity label (`NW` = no-write-up) so unelevated clients of the same
-/// user can connect to the elevated daemon.
-/// Accepted risk: any authenticated local user can send Rescan/Shutdown to
-/// this single-user desktop daemon (documented trade-off, same as Everything).
-pub const PIPE_SDDL: &str = "D:(A;;GRGW;;;AU)S:(ML;;NW;;;LW)";
+/// SDDL for the pipe: generic read+write for the daemon's own user account
+/// only, plus a medium integrity label (`NW` = no-write-up) so that user's
+/// unelevated clients can connect to the elevated daemon. Other accounts on
+/// the PC (and low-integrity sandboxes) cannot list file names or send
+/// Rescan/Shutdown. `{SID}` is the token user, filled in by [`pipe_sddl`].
+pub const PIPE_SDDL: &str = "D:(A;;GRGW;;;{SID})S:(ML;;NW;;;ME)";
+
+/// [`PIPE_SDDL`] for the account this process runs as.
+#[cfg(windows)]
+pub fn pipe_sddl() -> io::Result<String> {
+    Ok(PIPE_SDDL.replace("{SID}", &current_user_sid()?))
+}
+
+/// String SID (`S-1-5-21-…`) of this process's token user. An elevated
+/// token keeps the signed-in user's SID, so it matches the unelevated
+/// window and CLI of the same account.
+#[cfg(windows)]
+fn current_user_sid() -> io::Result<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    // SAFETY: plain Win32 calls on handles and buffers owned here; the
+    // token is closed and the SID string freed on every path.
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // TOKEN_USER plus its SID fits easily; u64 storage keeps it aligned.
+        let mut buf = [0u64; 64];
+        let mut len = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenUser,
+            buf.as_mut_ptr().cast(),
+            std::mem::size_of_val(&buf) as u32,
+            &mut len,
+        );
+        let err = io::Error::last_os_error();
+        CloseHandle(token);
+        if ok == 0 {
+            return Err(err);
+        }
+        let user = &*buf.as_ptr().cast::<TOKEN_USER>();
+        let mut wide: *mut u16 = std::ptr::null_mut();
+        if ConvertSidToStringSidW(user.User.Sid, &mut wide) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let n = (0..).take_while(|&i| *wide.add(i) != 0).count();
+        let sid = String::from_utf16_lossy(std::slice::from_raw_parts(wide, n));
+        LocalFree(wide.cast());
+        Ok(sid)
+    }
+}
 
 /// Upper bound for the per-`client_id` `prev` cache.
 pub const MAX_PREV_CLIENTS: usize = 128;
@@ -38,10 +88,10 @@ pub const MAX_PREV_CLIENTS: usize = 128;
 /// frame instead of a thread (F13).
 pub const MAX_CLIENTS: usize = 64;
 
-/// Build the pipe security descriptor from [`PIPE_SDDL`].
+/// Build the pipe security descriptor from [`pipe_sddl`].
 #[cfg(windows)]
 pub fn pipe_security_descriptor() -> io::Result<SecurityDescriptor> {
-    let sddl = widestring::U16CString::from_str(PIPE_SDDL)
+    let sddl = widestring::U16CString::from_str(pipe_sddl()?)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "bad SDDL"))?;
     SecurityDescriptor::deserialize(sddl.as_ucstr())
 }
@@ -185,7 +235,18 @@ pub enum Action {
 }
 
 /// One client connection: request/response loop until EOF or error.
+/// Gives back the `active_clients` slot when the client thread ends, also by
+/// a panic: one leaked slot per panic would lock every client out after 64.
+struct ClientSlot<'a>(&'a Shared);
+
+impl Drop for ClientSlot<'_> {
+    fn drop(&mut self) {
+        self.0.active_clients.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 fn handle_client(shared: &Arc<Shared>, stream: Stream) {
+    let _slot = ClientSlot(shared);
     let mut reader = BufReader::new(stream);
     // `client_id`s observed on this connection; their `prev` entries are
     // dropped on disconnect to keep the map small.
@@ -225,7 +286,6 @@ fn handle_client(shared: &Arc<Shared>, stream: Stream) {
             cache.remove(&id);
         }
     }
-    shared.active_clients.fetch_sub(1, Ordering::Relaxed);
 }
 
 /// Dispatch one request (pure handling; `Shutdown` side effects are left to
@@ -274,11 +334,13 @@ fn handle_request(
                 // volume is added back: lift its auto-include exclusion.
                 set_volume_excluded(shared, letter, false);
             }
-            shared
-                .rescan_queue
-                .lock()
-                .expect("rescan lock poisoned")
-                .push(volume.map(|c| c.to_ascii_uppercase()));
+            // One slot per target: a client looping on Rescan must not queue
+            // an unbounded series of full scans.
+            let item = volume.map(|c| c.to_ascii_uppercase());
+            let mut queue = shared.rescan_queue.lock().expect("rescan lock poisoned");
+            if !queue.contains(&item) {
+                queue.push(item);
+            }
             (Response::Ok {}, Action::Reply)
         }
         Request::VolumesSetEnabled { volume, enabled } => (
@@ -329,12 +391,11 @@ fn handle_volumes_set_enabled(shared: &Arc<Shared>, volume: char, enabled: bool)
         };
     };
     let mut index = shared.index.write().expect("index lock poisoned");
-    let Some(vol) = index.volumes.iter_mut().find(|v| v.letter == letter) else {
+    if !index.set_volume_enabled(letter, enabled) {
         return Response::Error {
             message: format!("unknown volume {letter}"),
         };
-    };
-    vol.enabled = enabled;
+    }
     Response::Ok {}
 }
 

@@ -34,6 +34,8 @@ pub const TAIL_INTERVAL: Duration = Duration::from_millis(750);
 /// window (256 MB of USN records, hours of activity) without hammering the
 /// SSD; unchanged indexes are not rewritten at all.
 pub const SAVE_INTERVAL: Duration = Duration::from_secs(30 * 60);
+/// `flokid.log` size past which startup moves it to `flokid.old.log`.
+const LOG_ROTATE_BYTES: u64 = 10 * 1024 * 1024;
 /// Scan records pushed per write lock.
 pub const SCAN_BATCH: usize = 10_000;
 /// Journal size created when a volume has none, and the floor enforced on
@@ -518,14 +520,26 @@ fn load_index(path: &std::path::Path, no_load: bool) -> Index {
 
 /// Initialize `tracing`: stderr plus `%LOCALAPPDATA%\Floki\flokid.log`.
 pub fn init_logging() -> anyhow::Result<()> {
+    use tracing_subscriber::prelude::*;
     let dir = ensure_data_dir()?;
+    let log_path = dir.join("flokid.log");
+    // Nothing else bounds the log: past LOG_ROTATE_BYTES at startup, keep one
+    // previous file and start fresh.
+    if std::fs::metadata(&log_path).is_ok_and(|m| m.len() > LOG_ROTATE_BYTES) {
+        let _ = std::fs::rename(&log_path, dir.join("flokid.old.log"));
+    }
     let log_file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(dir.join("flokid.log"))?;
-    let file_layer = tracing_subscriber::fmt::layer().with_writer(std::sync::Mutex::new(log_file));
+        .open(&log_path)?;
+    // INFO and up in the file: per-tick debug lines (an absent volume logs
+    // every 750 ms) would grow it without bound. FLOKI_LOG overrides.
+    let file_filter = tracing_subscriber::EnvFilter::try_from_env("FLOKI_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::sync::Mutex::new(log_file))
+        .with_filter(file_filter);
     let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
-    use tracing_subscriber::prelude::*;
     tracing_subscriber::registry()
         .with(stderr_layer)
         .with(file_layer)
@@ -1091,6 +1105,10 @@ fn scan_new_volume(
             log_scan_complete(letter, done, started);
         }
         Err(e) => {
+            // Partial entries (and, for a new volume, its cursor) must never
+            // be saved as a finished scan: the next boot would only replay
+            // the journal and the missing files would never come back.
+            mark_volume_incomplete(letter);
             tracing::warn!(target: "flokid", volume = %letter, error = %e, "scan failed");
         }
     }
@@ -1246,6 +1264,10 @@ fn rescan_existing_volume(
             log_scan_complete(letter, done, started);
         }
         Err(e) => {
+            // Partial entries (and, for a new volume, its cursor) must never
+            // be saved as a finished scan: the next boot would only replay
+            // the journal and the missing files would never come back.
+            mark_volume_incomplete(letter);
             tracing::warn!(target: "flokid", volume = %letter, error = %e, "scan failed");
         }
     }

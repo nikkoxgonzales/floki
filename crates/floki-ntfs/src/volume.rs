@@ -504,14 +504,14 @@ impl VolumeHandle {
     }
 
     /// Full-volume enumeration via `FSCTL_ENUM_USN_DATA` with a 1 MiB buffer,
-    /// looping until `ERROR_HANDLE_EOF`. Returns the journal's `NextUsn` (fresh
-    /// `QUERY` after the walk) so the caller can tail from there.
+    /// looping until `ERROR_HANDLE_EOF`. Returns the pre-walk snapshot USN so
+    /// the caller can tail from there.
     ///
     /// Snapshot semantics: `HighUsn` is bound to the journal's `NextUsn` from
-    /// a pre-walk `QUERY`, so files created *during* the walk (USN newer than
-    /// the snapshot) are excluded from the enumeration and picked up by the
-    /// first tail poll instead of being double-applied. The returned cursor is
-    /// a post-walk `QUERY.next_usn`, covering the `(snapshot, ∞)` tail window.
+    /// a pre-walk `QUERY`, so files created or changed *during* the walk (USN
+    /// newer than the snapshot) are excluded from the enumeration. The tail
+    /// replays them from the returned snapshot. A post-walk cursor would skip
+    /// them until the next rescan.
     ///
     /// The volume root directory (MFT index 5) is reported exactly as NTFS
     /// returns it — its `parent_frn` refers to MFT index 5 itself — and is
@@ -626,7 +626,7 @@ impl VolumeHandle {
                 aggregate.first_unsupported,
             ));
         }
-        Ok(self.query_journal()?.next_usn)
+        Ok(snapshot_usn)
     }
 
     /// ReFS full enumeration: walk every directory from the root with

@@ -142,6 +142,8 @@ pub enum TermKind {
     Ext(Vec<String>),
     /// Substring on the rebuilt full path.
     Path(String),
+    /// Direct child of the folder at this full path (`parent:`).
+    Parent(String),
     /// `DIRECTORY` flag set.
     IsDir,
     /// `DIRECTORY` flag clear.
@@ -154,7 +156,8 @@ impl PartialEq for TermKind {
             (TermKind::Substring(a), TermKind::Substring(b))
             | (TermKind::Glob(a), TermKind::Glob(b))
             | (TermKind::WholeName(a), TermKind::WholeName(b))
-            | (TermKind::Path(a), TermKind::Path(b)) => a == b,
+            | (TermKind::Path(a), TermKind::Path(b))
+            | (TermKind::Parent(a), TermKind::Parent(b)) => a == b,
             (TermKind::Regex { pattern: a, .. }, TermKind::Regex { pattern: b, .. }) => a == b,
             (TermKind::Ext(a), TermKind::Ext(b)) => a == b,
             (TermKind::IsDir, TermKind::IsDir) | (TermKind::IsFile, TermKind::IsFile) => true,
@@ -171,17 +174,35 @@ pub fn parse(input: &str) -> Query {
     let mut p = Parser {
         chars: input.chars().collect(),
         pos: 0,
+        depth: 0,
     };
-    let root = p.parse_or().unwrap_or(Node::MatchAll);
+    // A stray `)` or `>` ends `parse_or`; skip it and keep the rest of the
+    // query instead of silently dropping it.
+    let mut parts = Vec::new();
+    loop {
+        if let Some(n) = p.parse_or() {
+            parts.push(n);
+        }
+        p.skip_ws();
+        if p.eat().is_none() {
+            break;
+        }
+    }
     Query {
         raw: input.to_string(),
-        root,
+        root: Node::fold_and(parts).unwrap_or(Node::MatchAll),
     }
 }
+
+/// Nesting limit for groups and `!`. The query comes from any pipe client and
+/// each level is a stack frame in the elevated daemon; deeper operators are
+/// dropped instead of overflowing the stack.
+const MAX_DEPTH: u32 = 64;
 
 struct Parser {
     chars: Vec<char>,
     pos: usize,
+    depth: u32,
 }
 
 impl Parser {
@@ -242,7 +263,13 @@ impl Parser {
         self.skip_ws();
         if self.peek() == Some('!') {
             self.eat();
-            return match self.parse_unary() {
+            if self.depth >= MAX_DEPTH {
+                return None;
+            }
+            self.depth += 1;
+            let inner = self.parse_unary();
+            self.depth -= 1;
+            return match inner {
                 Some(n) => Some(Node::Not(Box::new(n))),
                 None => plain_node("!", false),
             };
@@ -252,11 +279,17 @@ impl Parser {
 
     fn parse_primary(&mut self) -> Option<Node> {
         self.skip_ws();
+        if matches!(self.peek(), Some('(' | '<')) && self.depth >= MAX_DEPTH {
+            self.eat();
+            return None;
+        }
         match self.peek() {
             None | Some('|') | Some(')') | Some('>') => None,
             Some('(') => {
                 self.eat();
+                self.depth += 1;
                 let n = self.parse_or();
+                self.depth -= 1;
                 self.skip_ws();
                 if self.peek() == Some(')') {
                     self.eat();
@@ -265,7 +298,9 @@ impl Parser {
             }
             Some('<') => {
                 self.eat();
+                self.depth += 1;
                 let n = self.parse_or();
+                self.depth -= 1;
                 self.skip_ws();
                 if self.peek() == Some('>') {
                     self.eat();
@@ -285,8 +320,22 @@ impl Parser {
             }
             Some(_) => {
                 let mut s = String::new();
+                // Inside `regex:` the pattern's own `(`, `)`, `|`, `<`, `>`
+                // and `"` belong to it; only whitespace or a `)` that closes
+                // an outer group ends it.
+                let mut regex_parens: u32 = 0;
                 while let Some(c) = self.peek() {
-                    if c.is_whitespace() || matches!(c, '|' | '"' | '(' | ')' | '<' | '>') {
+                    if c.is_whitespace() {
+                        break;
+                    }
+                    if is_regex_term(&s) {
+                        match c {
+                            '(' => regex_parens += 1,
+                            ')' if regex_parens == 0 => break,
+                            ')' => regex_parens -= 1,
+                            _ => {}
+                        }
+                    } else if matches!(c, '|' | '"' | '(' | ')' | '<' | '>') {
                         break;
                     }
                     s.push(c);
@@ -363,6 +412,64 @@ fn and_opt(a: Node, b: Option<Node>) -> Node {
     match b {
         None => a,
         Some(n) => Node::And(vec![a, n]),
+    }
+}
+
+/// Extension lists behind Everything-style type macros (`audio:`, `pic:`...).
+/// Sorted, as `ext:` lists are.
+fn macro_exts(pre: &str) -> Option<&'static [&'static str]> {
+    const AUDIO: &[&str] = &[
+        "aac", "aif", "aiff", "ape", "flac", "m4a", "mid", "midi", "mp3", "ogg", "opus", "wav",
+        "wma",
+    ];
+    const VIDEO: &[&str] = &[
+        "3gp", "avi", "flv", "m2ts", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ts", "webm",
+        "wmv",
+    ];
+    const DOC: &[&str] = &[
+        "csv", "doc", "docx", "epub", "md", "odp", "ods", "odt", "pdf", "ppt", "pptx", "rtf",
+        "txt", "xls", "xlsx",
+    ];
+    const PIC: &[&str] = &[
+        "avif", "bmp", "gif", "heic", "ico", "jpeg", "jpg", "png", "psd", "raw", "svg", "tif",
+        "tiff", "webp",
+    ];
+    const ZIP: &[&str] = &[
+        "7z", "bz2", "cab", "gz", "iso", "rar", "tar", "tgz", "xz", "zip", "zst",
+    ];
+    const EXE: &[&str] = &["bat", "cmd", "com", "exe", "msi", "ps1", "scr"];
+    let lists: [(&str, &'static [&'static str]); 7] = [
+        ("audio", AUDIO),
+        ("video", VIDEO),
+        ("doc", DOC),
+        ("pic", PIC),
+        ("image", PIC),
+        ("zip", ZIP),
+        ("exe", EXE),
+    ];
+    lists
+        .into_iter()
+        .find(|(name, _)| pre.eq_ignore_ascii_case(name))
+        .map(|(_, exts)| exts)
+}
+
+/// True once `s` reads `regex:` after any `case:`/`folder:`/`file:` prefixes.
+fn is_regex_term(s: &str) -> bool {
+    let mut rest = s;
+    loop {
+        let Some((pre, post)) = rest.split_once(':') else {
+            return false;
+        };
+        if pre.eq_ignore_ascii_case("regex") {
+            return true;
+        }
+        if !["case", "folder", "file"]
+            .iter()
+            .any(|p| pre.eq_ignore_ascii_case(p))
+        {
+            return false;
+        }
+        rest = post;
     }
 }
 
@@ -456,6 +563,44 @@ fn parse_func(s: &str, case: bool) -> Option<Node> {
             // Reached via `folder:case:x`-style recursion.
             return parse_func(post, true);
         }
+        if let Some(exts) = macro_exts(pre) {
+            let ext = Node::Term(Term {
+                kind: TermKind::Ext(exts.iter().map(|e| (*e).to_owned()).collect()),
+                case_sensitive: false,
+            });
+            return Some(and_opt(
+                ext,
+                if post.is_empty() {
+                    None
+                } else {
+                    parse_func(post, case)
+                },
+            ));
+        }
+        if pre.eq_ignore_ascii_case("parent") {
+            if post.is_empty() {
+                return None;
+            }
+            return Some(Node::Term(Term {
+                kind: TermKind::Parent(post.to_string()),
+                case_sensitive: false,
+            }));
+        }
+        // `d:` alone, or a path like `d:\music`: everything under that path.
+        if pre.len() == 1 && pre.as_bytes()[0].is_ascii_alphabetic() {
+            if post.is_empty() {
+                return Some(Node::Term(Term {
+                    kind: TermKind::Path(format!("{pre}:\\")),
+                    case_sensitive: false,
+                }));
+            }
+            if post.starts_with(['\\', '/']) {
+                return Some(Node::Term(Term {
+                    kind: TermKind::Path(s.replace('/', "\\")),
+                    case_sensitive: case,
+                }));
+            }
+        }
         // Unknown `xxx:` prefix: literal, exactly like Everything.
         return plain_node(s, case);
     }
@@ -471,6 +616,34 @@ mod tests {
             Node::Term(t) => t,
             other => panic!("expected term, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn stray_closer_keeps_the_rest_of_the_query() {
+        assert_eq!(parse("main) rs").root, parse("main rs").root);
+        assert_eq!(parse("report>2024").root, parse("report 2024").root);
+    }
+
+    #[test]
+    fn deep_nesting_does_not_overflow() {
+        let deep = "(".repeat(100_000) + "x";
+        let _ = parse(&deep);
+        let bangs = "!".repeat(100_000) + "x";
+        let _ = parse(&bangs);
+    }
+
+    #[test]
+    fn regex_keeps_its_parens_and_bars() {
+        for q in ["regex:^IMG_(\\d+)", "regex:(jpg|png)$", "case:regex:(A|B)"] {
+            let parsed = parse(q);
+            let t = term(&parsed);
+            assert!(matches!(t.kind, TermKind::Regex { .. }), "{q}: {t:?}");
+        }
+        // A `)` closing an outer group still ends the pattern.
+        assert_eq!(
+            parse("(regex:a.c) foo").root,
+            parse("regex:a.c foo").root
+        );
     }
 
     #[test]

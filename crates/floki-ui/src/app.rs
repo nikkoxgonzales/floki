@@ -12,6 +12,7 @@
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -367,6 +368,12 @@ pub struct FlokiApp {
     /// One-shot auto-start guard (first seconds after launch only).
     auto_launch_tried: bool,
     created_at: Instant,
+    /// Results of actions run off the UI thread (`schtasks`, the shell's
+    /// recycle), drained in `logic()`.
+    bg_tx: mpsc::Sender<BgDone>,
+    bg_rx: mpsc::Receiver<BgDone>,
+    /// An indexer start is running in the background.
+    launch_in_flight: bool,
 
     theme: theme::ThemeMode,
     /// Store `theme` on save (false while a `--theme=` override is untouched).
@@ -377,6 +384,9 @@ pub struct FlokiApp {
     context_open: bool,
     /// Bring this row into view on the next frame.
     scroll_target: Option<usize>,
+    /// Search the window re-ran by itself (indexing finished): its results
+    /// keep the selected row and scroll instead of jumping to the top.
+    keep_place_seq: Option<u64>,
     /// Jump the list back to the top on the next frame (new result set).
     scroll_to_top: bool,
     /// List scroll offset and viewport height from the last frame.
@@ -408,6 +418,7 @@ impl FlokiApp {
         // Kick off a status probe immediately so a missing service shows the
         // "Indexer not running" panel on the first frame.
         let _ = worker.tx.send(ToWorker::Status { seq: 0 });
+        let (bg_tx, bg_rx) = mpsc::channel();
         Self {
             worker,
             meta: MetaWorker::spawn(),
@@ -461,11 +472,15 @@ impl FlokiApp {
             adding: HashSet::new(),
             auto_launch_tried: false,
             created_at: Instant::now(),
+            bg_tx,
+            bg_rx,
+            launch_in_flight: false,
             theme,
             save_theme: true,
             open_menu_key: false,
             context_open: false,
             scroll_target: None,
+            keep_place_seq: None,
             scroll_to_top: false,
             list_offset: 0.0,
             list_view_h: 0.0,
@@ -642,7 +657,21 @@ impl FlokiApp {
             self.elevate_error = None;
             return;
         }
-        match actions::start_indexer_hidden() {
+        if self.launch_in_flight {
+            return;
+        }
+        // `schtasks` or the UAC prompt can take a while: never on this thread.
+        self.launch_in_flight = true;
+        let tx = self.bg_tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(BgDone::IndexerStart(actions::start_indexer_hidden()));
+        });
+    }
+
+    /// Apply the outcome of a background [`start_owned_indexer`].
+    fn indexer_start_done(&mut self, result: std::io::Result<actions::IndexerLaunch>) {
+        self.launch_in_flight = false;
+        match result {
             Ok(kind) => {
                 self.launch_pending = true;
                 self.launched_at = Some(Instant::now());
@@ -1534,6 +1563,12 @@ impl FlokiApp {
         self.elapsed_us = o.elapsed_us;
         self.search_error = None;
         if o.offset == 0 {
+            let keep = self.keep_place_seq.take() == Some(seq);
+            let prev = self
+                .selected
+                .filter(|_| keep)
+                .and_then(|i| self.hits.get(i))
+                .map(|h| (h.path.clone(), h.name.clone()));
             self.pending_search = None;
             self.page_pending = false;
             self.hits = o.hits;
@@ -1541,9 +1576,19 @@ impl FlokiApp {
             self.hits_seq = seq;
             self.meta.set_current(seq);
             self.shown_sort = self.sort;
-            self.selected = if self.hits.is_empty() { None } else { Some(0) };
-            self.scroll_target = None;
-            self.scroll_to_top = true;
+            let kept = prev.and_then(|(path, name)| {
+                self.hits
+                    .iter()
+                    .position(|h| h.path == path && h.name == name)
+            });
+            if let Some(i) = kept {
+                self.selected = Some(i);
+                self.scroll_target = Some(i);
+            } else {
+                self.selected = if self.hits.is_empty() { None } else { Some(0) };
+                self.scroll_target = None;
+                self.scroll_to_top = true;
+            }
         } else {
             self.page_pending = false;
             if o.offset as usize == self.hits.len() && seq == self.hits_seq {
@@ -1558,7 +1603,9 @@ impl FlokiApp {
     /// sort puts the header arrow back on their order.
     fn search_failed(&mut self, e: String) {
         self.pending_search = None;
-        self.page_pending = false;
+        // `page_pending` stays set after a failed page: cleared, the list
+        // re-requested the same page every frame while scrolled near the
+        // end. The next `request_search` resets it.
         self.sort = self.shown_sort;
         self.search_error = Some(e);
     }
@@ -1604,6 +1651,7 @@ impl FlokiApp {
                             self.status_error = None;
                             if refresh {
                                 self.request_search();
+                                self.keep_place_seq = Some(self.search_seq);
                             }
                         }
                         Err(e) => {
@@ -2364,6 +2412,16 @@ fn paint_sort_arrow(
     ));
 }
 
+/// A background action's outcome, sent back to the UI thread.
+enum BgDone {
+    IndexerStart(std::io::Result<actions::IndexerLaunch>),
+    Recycled {
+        idx: usize,
+        path: String,
+        result: std::io::Result<()>,
+    },
+}
+
 impl eframe::App for FlokiApp {
     /// Non-rendering work; also runs while the window is hidden, so tray,
     /// hotkey, debounce, and polling keep working from the tray.
@@ -2389,6 +2447,15 @@ impl eframe::App for FlokiApp {
 
         self.drain_worker();
         self.drain_meta();
+        while let Ok(done) = self.bg_rx.try_recv() {
+            match done {
+                BgDone::IndexerStart(result) => self.indexer_start_done(result),
+                BgDone::Recycled { idx, path, result } => match result {
+                    Ok(()) => self.drop_row(idx, &path),
+                    Err(e) => self.action_error = Some(format!("Delete failed: {e}")),
+                },
+            }
+        }
         self.drain_external(ctx);
 
         let now = Instant::now();
@@ -2534,8 +2601,13 @@ impl eframe::App for FlokiApp {
         let mut focus_box = false;
         let mut esc = false;
         let mut settings = false;
+        // While "Move to the Recycle Bin?" is up, only Esc reaches the list:
+        // Enter here would open (or run) the selected file instead.
+        let modal = self.delete_confirm.is_some();
         ui.input_mut(|i| {
-            if i.consume_key(Modifiers::NONE, Key::ArrowDown) {
+            if modal {
+                esc = i.consume_key(Modifiers::NONE, Key::Escape);
+            } else if i.consume_key(Modifiers::NONE, Key::ArrowDown) {
                 self.move_sel(1);
             } else if i.consume_key(Modifiers::NONE, Key::ArrowUp) {
                 self.move_sel(-1);
@@ -2561,7 +2633,7 @@ impl eframe::App for FlokiApp {
         // Home/End/PageUp/PageDown/Del edit the query when the box is
         // focused, so they only move/recycle the selection otherwise.
         let search_focused = ctx.memory(|m| m.has_focus(search_id));
-        if !search_focused {
+        if !search_focused && !modal {
             let step = self.page_step();
             ui.input_mut(|i| {
                 if i.consume_key(Modifiers::NONE, Key::Delete) {
@@ -2676,16 +2748,18 @@ impl eframe::App for FlokiApp {
                 });
             });
             if confirm {
-                match actions::recycle_to_bin(&target.path) {
-                    Ok(()) => {
-                        self.drop_row(target.idx, &target.path);
-                        self.delete_confirm = None;
-                    }
-                    Err(e) => {
-                        self.action_error = Some(format!("Delete failed: {e}"));
-                        self.delete_confirm = None;
-                    }
-                }
+                // A large folder takes the shell a long time: recycle off
+                // this thread and drop the row when it reports back.
+                self.delete_confirm = None;
+                let tx = self.bg_tx.clone();
+                std::thread::spawn(move || {
+                    let result = actions::recycle_to_bin(&target.path);
+                    let _ = tx.send(BgDone::Recycled {
+                        idx: target.idx,
+                        path: target.path,
+                        result,
+                    });
+                });
             } else if cancel {
                 self.delete_confirm = None;
             }

@@ -1,7 +1,9 @@
 //! Autostart registration via a per-user elevated Scheduled Task.
 //!
-//! `flokid install` creates a task named [`TASK_NAME`] that runs
-//! `<exe> run --hidden` at logon with highest privileges, so the indexer starts
+//! `flokid install` copies itself into a `Floki` folder under Program Files (only
+//! administrators can replace it there) and creates a task named
+//! [`TASK_NAME`] that runs that copy with `run --hidden` at logon with
+//! highest privileges, so the indexer starts
 //! elevated without a UAC prompt, and starts it right away. Anyone in the
 //! user's session can then start it again with `schtasks /Run /TN Floki`
 //! (still no prompt) — the UI's Start button does exactly that.
@@ -126,13 +128,61 @@ fn current_user() -> Option<String> {
     }
 }
 
+/// `Program Files\Floki`, from the known-folder API: `%ProgramFiles%` is
+/// an environment variable a standard user can redirect.
+#[cfg(windows)]
+fn install_dir() -> anyhow::Result<std::path::PathBuf> {
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath};
+
+    // SAFETY: the API allocates `path`; it is read once and freed here.
+    let dir = unsafe {
+        let mut path: *mut u16 = std::ptr::null_mut();
+        let hr = SHGetKnownFolderPath(&FOLDERID_ProgramFiles, 0, std::ptr::null_mut(), &mut path);
+        if hr < 0 {
+            CoTaskMemFree(path.cast());
+            return Err(anyhow::anyhow!("Program Files folder not found ({hr:#x})"));
+        }
+        let n = (0..).take_while(|&i| *path.add(i) != 0).count();
+        let s = String::from_utf16_lossy(std::slice::from_raw_parts(path, n));
+        CoTaskMemFree(path.cast());
+        s
+    };
+    Ok(std::path::PathBuf::from(dir).join("Floki"))
+}
+
+/// Copy this executable to `Program Files\Floki\flokid.exe` and return that
+/// path. The task runs elevated at every sign-in without a prompt, so it
+/// must point at a file only administrators can replace: registering a
+/// user-writable copy would let any program the user runs plant code that
+/// Windows then starts as administrator.
+#[cfg(windows)]
+fn install_binary() -> anyhow::Result<std::path::PathBuf> {
+    let src = std::env::current_exe()?;
+    let dir = install_dir()?;
+    let dst = dir.join("flokid.exe");
+    if src.eq(&dst) {
+        return Ok(dst);
+    }
+    std::fs::create_dir_all(&dir)?;
+    let old = dir.join("flokid.exe.old");
+    let _ = std::fs::remove_file(&old);
+    // A running indexer locks its exe but can be renamed out of the way.
+    if dst.exists() {
+        std::fs::rename(&dst, &old)?;
+    }
+    std::fs::copy(&src, &dst)?;
+    Ok(dst)
+}
+
 /// Register the logon task for the current executable, then start it.
 pub fn install() -> anyhow::Result<()> {
     if !is_elevated() {
         eprintln!("{NOT_ELEVATED_MSG}");
         std::process::exit(1);
     }
-    let exe = std::env::current_exe()?;
+    let exe = install_binary()?;
+    tracing::info!(target: "flokid", exe = %exe.display(), "installed indexer binary");
     let xml = task_xml(&exe.to_string_lossy(), current_user().as_deref());
     // schtasks reads the file as UTF-16 (BOM + LE units), matching the
     // encoding the XML declares.
@@ -169,6 +219,12 @@ pub fn uninstall() -> anyhow::Result<()> {
     tracing::info!(target: "flokid", task = TASK_NAME, "deleting scheduled task");
     let status = Command::new("schtasks").args(&args).status()?;
     if status.success() {
+        // Best effort: a running indexer keeps its exe until it exits.
+        if let Ok(dir) = install_dir() {
+            let _ = std::fs::remove_file(dir.join("flokid.exe.old"));
+            let _ = std::fs::remove_file(dir.join("flokid.exe"));
+            let _ = std::fs::remove_dir(&dir);
+        }
         Ok(())
     } else {
         Err(anyhow::anyhow!(
@@ -180,6 +236,15 @@ pub fn uninstall() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn install_dir_is_under_program_files() {
+        let dir = install_dir().unwrap();
+        assert!(dir.ends_with("Floki"), "{}", dir.display());
+        let parent = dir.parent().unwrap().to_string_lossy().to_lowercase();
+        assert!(parent.ends_with("program files"), "{parent}");
+    }
 
     #[test]
     fn install_argv_is_exact() {

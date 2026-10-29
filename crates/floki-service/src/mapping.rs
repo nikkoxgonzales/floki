@@ -129,6 +129,16 @@ pub fn apply_usn_event(index: &mut Index, vol: u8, event: &UsnEvent, root_frn: u
             );
             true
         }
+        // A file the index has never seen gets the record's name and parent:
+        // a full scan skips files changed mid-walk (their USN is past the
+        // snapshot), and this close is the only record the tail sees of them.
+        UsnEvent::Overwrite(record) if index.lookup(vol, record.frn).is_none() => {
+            if is_ntfs_metafile(record.parent_frn, &record.name, root_frn) {
+                return false;
+            }
+            index.apply(vol, create_event(record));
+            true
+        }
         UsnEvent::Overwrite(_) => {
             if let Some(mapped) = map_usn_event(event) {
                 index.apply(vol, mapped);
@@ -325,5 +335,51 @@ mod tests {
         };
         assert!(apply_usn_event(&mut index, 0, &UsnEvent::Create(user), 100));
         assert!(index.lookup(0, 201).is_some());
+    }
+
+    fn one_volume() -> Index {
+        let mut index = Index::new();
+        index.add_volume(floki_core::Volume {
+            letter: 'C',
+            guid: [0; 16],
+            journal_id: 1,
+            next_usn: 0,
+            root_frn: 100,
+            enabled: true,
+            monitor: true,
+        });
+        index
+    }
+
+    #[test]
+    fn overwrite_of_an_unknown_file_adds_it() {
+        // A file changed mid-scan is skipped by the enumeration; the tail's
+        // close record is the only place it shows up.
+        let mut index = one_volume();
+        let rec = RawRecord {
+            frn: 300,
+            parent_frn: 100,
+            attrs: 0,
+            name: "edited.txt".to_owned(),
+        };
+        assert!(apply_usn_event(&mut index, 0, &UsnEvent::Overwrite(rec), 100));
+        let id = index.lookup(0, 300).expect("added from the close record");
+        assert_eq!(index.name(id), Some("edited.txt"));
+    }
+
+    #[test]
+    fn overwrite_never_revives_a_deleted_file() {
+        let mut index = one_volume();
+        let rec = RawRecord {
+            frn: 301,
+            parent_frn: 100,
+            attrs: 0,
+            name: "gone.txt".to_owned(),
+        };
+        apply_usn_event(&mut index, 0, &UsnEvent::Create(rec.clone()), 100);
+        apply_usn_event(&mut index, 0, &UsnEvent::Delete { frn: 301 }, 100);
+        apply_usn_event(&mut index, 0, &UsnEvent::Overwrite(rec), 100);
+        let id = index.lookup(0, 301).unwrap();
+        assert!(index.entries[id as usize].is_tombstone());
     }
 }

@@ -91,7 +91,30 @@ impl McpConfig {
     /// defaults / a new token.
     #[must_use]
     pub fn from_json(bytes: &[u8]) -> Self {
-        let mut cfg: Self = serde_json::from_slice(bytes).unwrap_or_default();
+        // One hand-edited field of the wrong type must not reset the rest:
+        // `load` writes the result back, and a new token breaks every
+        // configured client. Keep each field that still reads.
+        let mut cfg: Self = serde_json::from_slice(bytes).unwrap_or_else(|_| {
+            let v: serde_json::Value = serde_json::from_slice(bytes).unwrap_or_default();
+            let mut cfg = Self::default();
+            if let Some(b) = v.get("enabled").and_then(serde_json::Value::as_bool) {
+                cfg.enabled = b;
+            }
+            if let Some(b) = v.get("lan").and_then(serde_json::Value::as_bool) {
+                cfg.lan = b;
+            }
+            if let Some(p) = v
+                .get("port")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|p| u16::try_from(p).ok())
+            {
+                cfg.port = p;
+            }
+            if let Some(t) = v.get("token").and_then(serde_json::Value::as_str) {
+                cfg.token = t.to_owned();
+            }
+            cfg
+        });
         if cfg.token.len() < MIN_TOKEN_LEN {
             cfg.token = new_token();
         }
@@ -141,6 +164,16 @@ mod tests {
         assert!(weak.enabled && weak.lan);
         assert_eq!(weak.port, 9000);
         assert_eq!(weak.token.len(), 64, "a short token is replaced");
+    }
+
+    #[test]
+    fn one_wrong_typed_field_keeps_the_token() {
+        let token = "a".repeat(64);
+        let json = format!(r#"{{"enabled":true,"lan":false,"port":"7457","token":"{token}"}}"#);
+        let cfg = McpConfig::from_json(json.as_bytes());
+        assert_eq!(cfg.token, token);
+        assert!(cfg.enabled);
+        assert_eq!(cfg.port, DEFAULT_PORT);
     }
 
     #[test]

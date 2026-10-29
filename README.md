@@ -102,6 +102,12 @@ the window looks for `flokid.exe` next to itself.
    You can also skip this step: open `floki.exe` and click **Start indexer**
    or **Start it at every sign-in** on the panel it shows.
 
+   `install` copies `flokid.exe` to `C:\Program Files\Floki`, where only
+   administrators can change it, because Windows runs that copy elevated at
+   every sign-in. After you update Floki, run `flokid install` again (or turn
+   **Start it at every sign-in** off and on) so the sign-in task gets the
+   new version.
+
 2. **Open the window** with `floki.exe`, or press `Ctrl+Alt+Space` once it is
    in the tray. The first index of a large NTFS drive takes a minute or so;
    results appear while it runs, and the status line says when they are
@@ -126,6 +132,9 @@ Plain text matches anywhere in the **name**, ignoring case.
 | `*.rs`, `rep?rt` | whole-name wildcards (`*` any run, `?` one character) |
 | `ext:jpg;png;gif` | by extension |
 | `path:projects\api` | text anywhere in the full path |
+| `d:`, `c:\users\me` | everything on a drive, or under a path |
+| `parent:c:\projects` | only the direct children of that folder |
+| `audio:` `video:` `doc:` `pic:` `zip:` `exe:` | file types (`audio:live` stacks with a name) |
 | `folder:node_modules` / `file:readme` | only folders / only files |
 | `regex:^IMG_\d+` | a regular expression on the name |
 | `case:README` | case-sensitive (stacks: `case:regex:^A`) |

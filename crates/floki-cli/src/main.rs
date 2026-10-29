@@ -10,6 +10,19 @@ use clap::{Parser, Subcommand};
 use floki_proto::{Client, IndexState, Request, Response, Sort};
 use std::time::Instant;
 
+/// `println!` that ends the process quietly when stdout is closed (`flk status
+/// | head -1`): `println!` panics there with exit code 101.
+macro_rules! outln {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        if let Err(e) = writeln!(std::io::stdout(), $($arg)*) {
+            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                std::process::exit(0);
+            }
+        }
+    }};
+}
+
 /// Canned bench workload: 20 queries, each run `--iters` times.
 const CANNED_QUERIES: [&str; 20] = [
     "a",
@@ -407,7 +420,7 @@ fn cmd_status(json: bool) -> i32 {
     let response = call_or_exit_3(&mut client, &Request::Status {});
     if json {
         match serde_json::to_string(&response) {
-            Ok(line) => println!("{line}"),
+            Ok(line) => outln!("{line}"),
             Err(err) => {
                 eprintln!("Error: {err}");
                 return 3;
@@ -424,16 +437,16 @@ fn cmd_status(json: bool) -> i32 {
         } => {
             if !json {
                 let rss_mb = rss_bytes as f64 / 1024.0 / 1024.0;
-                println!("entries: {entries}");
-                println!("rss: {rss_mb:.2} MB ({rss_bytes} bytes)");
-                println!("uptime: {uptime_s}s");
-                println!("state: {}", state_label(&state));
-                println!("cpu: {}", cpu_policy_line());
-                println!("volumes:");
-                println!("  {:<4} {:>10} {:>12}  live", "vol", "entries", "next_usn");
+                outln!("entries: {entries}");
+                outln!("rss: {rss_mb:.2} MB ({rss_bytes} bytes)");
+                outln!("uptime: {uptime_s}s");
+                outln!("state: {}", state_label(&state));
+                outln!("cpu: {}", cpu_policy_line());
+                outln!("volumes:");
+                outln!("  {:<4} {:>10} {:>12}  live", "vol", "entries", "next_usn");
                 for vol in &volumes {
                     let live = if vol.live { "yes" } else { "no" };
-                    println!(
+                    outln!(
                         "  {:<4} {:>10} {:>12}  {live}",
                         vol.letter, vol.entries, vol.next_usn
                     );
@@ -479,7 +492,7 @@ fn cmd_rescan(volume_raw: Option<&str>) -> i32 {
     let response = call_or_exit_3(&mut client, &Request::Rescan { volume });
     match response {
         Response::Ok {} => {
-            println!("Ok");
+            outln!("Ok");
             0
         }
         Response::Error { message } => {
@@ -498,7 +511,7 @@ fn cmd_rescan(volume_raw: Option<&str>) -> i32 {
 fn ok_or_error(response: Response, what: &str) -> i32 {
     match response {
         Response::Ok {} => {
-            println!("Ok");
+            outln!("Ok");
             0
         }
         Response::Error { message } => {
@@ -517,7 +530,7 @@ fn cmd_volumes() -> i32 {
     let response = call_or_exit_3(&mut client, &Request::Status {});
     match response {
         Response::Status { volumes, .. } => {
-            println!(
+            outln!(
                 "  {:<4} {:>10} {:>12}  {:<4} {:<7} {:<7}",
                 "vol", "entries", "next_usn", "live", "enabled", "monitor"
             );
@@ -525,7 +538,7 @@ fn cmd_volumes() -> i32 {
                 let live = if vol.live { "yes" } else { "no" };
                 let enabled = if vol.enabled { "yes" } else { "no" };
                 let monitor = if vol.monitor { "yes" } else { "no" };
-                println!(
+                outln!(
                     "  {:<4} {:>10} {:>12}  {live:<4} {enabled:<7} {monitor:<7}",
                     vol.letter, vol.entries, vol.next_usn
                 );
@@ -604,9 +617,9 @@ fn print_targets(
     auto_include_removable: bool,
     auto_remove_offline: bool,
 ) {
-    println!("auto_include_fixed: {}", yes_no(auto_include_fixed));
-    println!("auto_include_removable: {}", yes_no(auto_include_removable));
-    println!("auto_remove_offline: {}", yes_no(auto_remove_offline));
+    outln!("auto_include_fixed: {}", yes_no(auto_include_fixed));
+    outln!("auto_include_removable: {}", yes_no(auto_include_removable));
+    outln!("auto_remove_offline: {}", yes_no(auto_remove_offline));
 }
 
 fn yes_no(flag: bool) -> &'static str {
@@ -716,7 +729,7 @@ fn cmd_config(action: Option<ConfigAction>) -> i32 {
                     0
                 }
                 Response::Ok {} => {
-                    println!("Ok");
+                    outln!("Ok");
                     0
                 }
                 Response::Error { message } => {
@@ -737,7 +750,7 @@ fn cmd_shutdown() -> i32 {
     let response = call_or_exit_3(&mut client, &Request::Shutdown {});
     match response {
         Response::Ok {} => {
-            println!("flokid stopping");
+            outln!("flokid stopping");
             0
         }
         Response::Error { message } => {
@@ -827,40 +840,40 @@ fn cmd_bench(iters: u32) -> i32 {
     let wall_p95 = percentile(&wall_us, 95.0);
 
     let runs = service_us.len();
-    println!(
+    outln!(
         "bench: {} queries x {iters} iters = {runs} runs (one connection)",
         CANNED_QUERIES.len()
     );
-    println!("metric    p50_us    p95_us");
-    println!("service   {service_p50:<8}  {service_p95}");
-    println!("wall      {wall_p50:<8}  {wall_p95}");
+    outln!("metric    p50_us    p95_us");
+    outln!("service   {service_p50:<8}  {service_p95}");
+    outln!("wall      {wall_p50:<8}  {wall_p95}");
     let rest_mb = rest_rss_bytes as f64 / 1024.0 / 1024.0;
     let warm_mb = warm_rss_bytes as f64 / 1024.0 / 1024.0;
-    println!("entries: {entries}");
+    outln!("entries: {entries}");
     if entries == 0 {
-        println!("rss at rest: {rest_mb:.2} MB (n/a: zero entries)");
+        outln!("rss at rest: {rest_mb:.2} MB (n/a: zero entries)");
     } else {
         let rest_per_million_mb =
             rest_rss_bytes as f64 / entries as f64 * 1_000_000.0 / 1024.0 / 1024.0;
-        println!("rss at rest: {rest_mb:.2} MB ({rest_per_million_mb:.2} MB/1M entries)");
+        outln!("rss at rest: {rest_mb:.2} MB ({rest_per_million_mb:.2} MB/1M entries)");
     }
-    println!("rss warm (after queries): {warm_mb:.2} MB ({warm_rss_bytes} bytes)");
+    outln!("rss warm (after queries): {warm_mb:.2} MB ({warm_rss_bytes} bytes)");
 
     let wall_ok = wall_p95 < P95_WALL_GATE_US;
     let wall_ms = wall_p95 as f64 / 1000.0;
-    println!(
+    outln!(
         "gate p95 wall < 50 ms: {} ({wall_ms:.3} ms)",
         if wall_ok { "ok" } else { "FAIL" }
     );
 
     let rss_ok = if entries == 0 {
-        println!("gate rss/1M at rest <= 70 MB: n/a (zero entries)");
+        outln!("gate rss/1M at rest <= 70 MB: n/a (zero entries)");
         true
     } else {
         let per_million = rest_rss_bytes as f64 / entries as f64 * 1_000_000.0;
         let per_million_mb = per_million / 1024.0 / 1024.0;
         let ok = per_million <= RSS_PER_MILLION_GATE_BYTES;
-        println!(
+        outln!(
             "gate rss/1M at rest <= 70 MB: {} ({per_million_mb:.2} MB)",
             if ok { "ok" } else { "FAIL" }
         );
@@ -868,10 +881,10 @@ fn cmd_bench(iters: u32) -> i32 {
     };
 
     if wall_ok && rss_ok {
-        println!("PASS");
+        outln!("PASS");
         0
     } else {
-        println!("FAIL");
+        outln!("FAIL");
         3
     }
 }
