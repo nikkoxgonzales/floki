@@ -24,6 +24,20 @@ pub fn debounce_due(last_change: Instant, now: Instant) -> bool {
     now.duration_since(last_change) >= DEBOUNCE
 }
 
+/// Window after window creation in which a missing indexer is auto-started.
+/// Bounded so an indexer that vanishes later (sign-out, shutdown) never
+/// triggers a launch into a dying session: `schtasks` started then fails
+/// with 0xc0000142 and Windows shows an error box.
+pub const AUTO_LAUNCH_AFTER: Duration = Duration::from_secs(3);
+pub const AUTO_LAUNCH_UNTIL: Duration = Duration::from_secs(30);
+
+/// Returns `true` when the one auto-start of the indexer should fire,
+/// `since_launch` after the window was created.
+#[must_use]
+pub fn auto_launch_due(since_launch: Duration) -> bool {
+    since_launch > AUTO_LAUNCH_AFTER && since_launch <= AUTO_LAUNCH_UNTIL
+}
+
 /// Returns `true` when a response carrying `resp_seq` is stale given that the
 /// newest outstanding request is `current_seq`. Stale responses are dropped so
 /// a slow earlier query can never overwrite newer results.
@@ -418,6 +432,16 @@ mod tests {
         assert!(!debounce_due(t0, t0 + Duration::from_millis(29)));
         assert!(debounce_due(t0, t0 + Duration::from_millis(30)));
         assert!(debounce_due(t0, t0 + Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn auto_launch_only_shortly_after_window_start() {
+        assert!(!auto_launch_due(Duration::from_secs(3)));
+        assert!(auto_launch_due(Duration::from_millis(3001)));
+        assert!(auto_launch_due(Duration::from_secs(30)));
+        // Indexer killed at sign-out hours later: never relaunch.
+        assert!(!auto_launch_due(Duration::from_secs(31)));
+        assert!(!auto_launch_due(Duration::from_secs(8 * 3600)));
     }
 
     #[test]

@@ -1822,7 +1822,16 @@ fn spawn_persist(shared: &Arc<Shared>) {
                         return;
                     }
                 }
-                save_index(&worker);
+                // Park every tail for the save. Unparked, a busy tail made the
+                // save-fold race 3 times and fall back to the in-lock rebuild
+                // (searches blocked) on most saves. The serialization already
+                // holds the read lock, which stalls tail writes anyway. A scan
+                // that holds the scan lock gets the plain save, which refuses
+                // mid-scan.
+                match worker.scan_lock.try_lock() {
+                    Ok(_scan) => with_tails_parked(&worker, None, || save_index(&worker)),
+                    Err(_) => save_index(&worker),
+                }
             }
         }) {
         Ok(handle) => shared

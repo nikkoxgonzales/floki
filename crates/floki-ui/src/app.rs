@@ -2394,14 +2394,16 @@ impl eframe::App for FlokiApp {
         let now = Instant::now();
         // One auto-start shortly after launch when the worker's status poll
         // has failed to reach an indexer AND no custom pipe is set: covers
-        // startup/`--minimized` and the first-run case. Never probes the
+        // startup/`--minimized` and the first-run case. Bounded by
+        // `auto_launch_due` so an indexer lost later (sign-out) is never
+        // relaunched into the dying session. Never probes the
         // pipe on this thread (a busy indexer would freeze the window); a
         // live pipe (even mid-scan) keeps `connected` true, and `flokid`'s
         // singleton mutex refuses a rival anyway.
         if !self.auto_launch_tried
             && !self.connected
             && self.status_error.is_some()
-            && now.duration_since(self.created_at) > Duration::from_secs(3)
+            && model::auto_launch_due(now.duration_since(self.created_at))
             && std::env::var_os("FLOKI_PIPE").is_none()
         {
             self.auto_launch_tried = true;
@@ -2462,11 +2464,18 @@ impl eframe::App for FlokiApp {
         #[cfg(windows)]
         {
             if self.indexer_owned {
-                std::thread::spawn(|| {
+                // Wait up to 1 s: `main` returns right after this, and a
+                // detached thread dies with the process before the
+                // Shutdown is sent, which leaves the indexer running.
+                let t = std::thread::spawn(|| {
                     if let Ok(mut c) = floki_proto::Client::connect() {
                         let _ = c.call(&floki_proto::Request::Shutdown {});
                     }
                 });
+                let deadline = Instant::now() + Duration::from_secs(1);
+                while !t.is_finished() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
             }
         }
     }

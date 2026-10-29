@@ -17,7 +17,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tiny_http::{Header, Method, Response, Server};
@@ -81,8 +81,16 @@ impl Drop for McpServer {
             server.unblock();
         }
         if let Some(t) = self.thread.take() {
-            // Returns at once when idle; at worst waits out one tool call.
-            let _ = t.join();
+            // Returns at once when idle and waits out one tool call, but at
+            // most 2 s: a hung indexer must not keep a closing window alive.
+            // A thread left running ends with the process.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !t.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if t.is_finished() {
+                let _ = t.join();
+            }
         }
         // tiny_http wakes its accept thread by connecting to the listen
         // address, which fails for 0.0.0.0 on Windows: knock on loopback
@@ -320,6 +328,39 @@ mod tests {
         };
         let again = McpServer::start(&cfg, Arc::new(FakeBackend::default()));
         assert!(again.is_ok(), "{:?}", again.err());
+    }
+
+    /// An indexer that never answers.
+    struct HungBackend;
+    impl Backend for HungBackend {
+        fn call(&self, _: &floki_proto::Request) -> Result<floki_proto::Response, String> {
+            std::thread::sleep(Duration::from_secs(60));
+            Err("hung".to_owned())
+        }
+    }
+
+    #[test]
+    fn a_hung_indexer_does_not_hang_the_stop() {
+        let cfg = McpConfig {
+            enabled: true,
+            lan: false,
+            port: 0,
+            token: "t".repeat(64),
+        };
+        let server = McpServer::start(&cfg, Arc::new(HungBackend)).unwrap();
+        let mut s = TcpStream::connect(server.addr()).unwrap();
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_files","arguments":{"query":"x"}}}"#;
+        let req = format!(
+            "POST /mcp HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {}\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            cfg.token,
+            body.len()
+        );
+        s.write_all(req.as_bytes()).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let t0 = Instant::now();
+        drop(server);
+        assert!(t0.elapsed() < Duration::from_secs(4), "{:?}", t0.elapsed());
     }
 
     #[test]

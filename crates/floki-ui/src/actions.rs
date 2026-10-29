@@ -283,8 +283,16 @@ pub fn indexer_autostart_installed() -> bool {
 #[cfg(windows)]
 pub fn start_indexer_hidden() -> io::Result<IndexerLaunch> {
     use windows_sys::Win32::UI::Shell::{SEE_MASK_FLAG_NO_UI, SEE_MASK_NO_CONSOLE};
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SM_SHUTTINGDOWN, SW_HIDE,
+    };
 
+    // A process started while the session ends fails with 0xc0000142 and
+    // Windows shows an error box for it.
+    // SAFETY: GetSystemMetrics has no preconditions.
+    if unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) } != 0 {
+        return Err(io::Error::other("Windows is signing out"));
+    }
     if indexer_autostart_installed() && schtasks(&["/Run", "/TN", INDEXER_TASK]) {
         return Ok(IndexerLaunch::Task);
     }
