@@ -1,4 +1,5 @@
-//! Run-on-startup via `HKCU\...\Run\Floki` (`"<exe>" --minimized`).
+//! Run-on-startup via `HKCU\...\Run\Floki` (`"<exe>" --minimized`, or
+//! `"<exe>"` alone when the window opens at sign-in instead of the tray).
 //!
 //! Windows-only; other platforms get stubs so the crate type-checks.
 
@@ -14,16 +15,25 @@ fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// `"<current-exe>" --minimized` (quoted; no shell involved on write).
-#[cfg(windows)]
-fn startup_command() -> io::Result<String> {
-    let exe = std::env::current_exe()?;
-    Ok(format!("\"{}\" --minimized", exe.to_string_lossy()))
+/// `"<exe>" --minimized` in the tray, else `"<exe>"` (quoted; no shell
+/// involved on write).
+fn command_for(exe: &str, in_tray: bool) -> String {
+    if in_tray {
+        format!("\"{exe}\" --minimized")
+    } else {
+        format!("\"{exe}\"")
+    }
 }
 
-/// Whether the Run value exists (any content counts as enabled).
+/// Whether a Run command starts Floki in the tray.
+fn is_tray_command(cmd: &str) -> bool {
+    cmd.split_whitespace().any(|a| a == "--minimized")
+}
+
+/// The Run value: `None` when Floki does not open at sign-in, else
+/// whether it starts in the tray.
 #[cfg(windows)]
-pub fn is_enabled() -> bool {
+pub fn state() -> Option<bool> {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{
         RegCloseKey, RegOpenKeyExW, HKEY_CURRENT_USER, KEY_QUERY_VALUE,
@@ -43,14 +53,22 @@ pub fn is_enabled() -> bool {
         )
     };
     if open != ERROR_SUCCESS || key.is_null() {
-        return false;
+        return None;
     }
-    let enabled = query_value(key, &name).is_some();
+    let value = query_value(key, &name);
     // SAFETY: key came from a successful open.
     unsafe {
         RegCloseKey(key);
     }
-    enabled
+    let wide: Vec<u16> = value?
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| u16::from_le_bytes(*b))
+        .collect();
+    // REG_SZ data keeps its NUL terminator.
+    let cmd = String::from_utf16_lossy(&wide);
+    Some(is_tray_command(cmd.trim_end_matches('\0')))
 }
 
 #[cfg(windows)]
@@ -93,9 +111,9 @@ fn query_value(key: windows_sys::Win32::System::Registry::HKEY, name: &[u16]) ->
     Some(buf)
 }
 
-/// Create (`enabled`) or delete (`!enabled`) the Run value.
+/// Create (`Some(in_tray)`) or delete (`None`) the Run value.
 #[cfg(windows)]
-pub fn set_enabled(enabled: bool) -> io::Result<()> {
+pub fn set_state(state: Option<bool>) -> io::Result<()> {
     use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
     use windows_sys::Win32::System::Registry::{
         RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegSetValueExW, HKEY_CURRENT_USER,
@@ -126,8 +144,9 @@ pub fn set_enabled(enabled: bool) -> io::Result<()> {
     }
     // SAFETY: key is open for the whole scope; closed exactly once below.
     let result = unsafe {
-        if enabled {
-            let cmd = to_wide(&startup_command()?);
+        if let Some(in_tray) = state {
+            let exe = std::env::current_exe()?;
+            let cmd = to_wide(&command_for(&exe.to_string_lossy(), in_tray));
             let bytes = std::slice::from_raw_parts(
                 cmd.as_ptr().cast::<u8>(),
                 cmd.len() * std::mem::size_of::<u16>(),
@@ -167,21 +186,45 @@ pub fn set_enabled(enabled: bool) -> io::Result<()> {
 }
 
 #[cfg(not(windows))]
-pub fn is_enabled() -> bool {
-    false
+pub fn state() -> Option<bool> {
+    None
 }
 
 #[cfg(not(windows))]
-pub fn set_enabled(_enabled: bool) -> io::Result<()> {
+pub fn set_state(_state: Option<bool>) -> io::Result<()> {
     Err(io::Error::other("floki is Windows-only"))
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn tray_flag_round_trips_through_the_command() {
+        let exe = r"C:\Program Files\Floki\floki.exe";
+        assert!(is_tray_command(&command_for(exe, true)));
+        assert!(!is_tray_command(&command_for(exe, false)));
+    }
+
+    #[test]
+    fn a_folder_named_like_the_flag_is_not_the_flag() {
+        assert!(!is_tray_command(r#""C:\--minimized\floki.exe""#));
+    }
+
+    /// Reads the real HKCU Run value; run with `--ignored` on a machine
+    /// where Floki opens at sign-in.
+    #[test]
+    #[cfg(windows)]
+    #[ignore = "reads the user's registry"]
+    fn reads_the_installed_run_value() {
+        eprintln!("startup state: {:?}", state());
+        assert!(state().is_some());
+    }
+
     #[test]
     #[cfg(not(windows))]
     fn stubs_report_disabled_off_windows() {
-        assert!(!super::is_enabled());
-        assert!(super::set_enabled(true).is_err());
+        assert!(state().is_none());
+        assert!(set_state(Some(true)).is_err());
     }
 }

@@ -423,8 +423,7 @@ fn macro_exts(pre: &str) -> Option<&'static [&'static str]> {
         "wma",
     ];
     const VIDEO: &[&str] = &[
-        "3gp", "avi", "flv", "m2ts", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ts", "webm",
-        "wmv",
+        "3gp", "avi", "flv", "m2ts", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ts", "webm", "wmv",
     ];
     const DOC: &[&str] = &[
         "csv", "doc", "docx", "epub", "md", "odp", "ods", "odt", "pdf", "ppt", "pptx", "rtf",
@@ -640,10 +639,7 @@ mod tests {
             assert!(matches!(t.kind, TermKind::Regex { .. }), "{q}: {t:?}");
         }
         // A `)` closing an outer group still ends the pattern.
-        assert_eq!(
-            parse("(regex:a.c) foo").root,
-            parse("regex:a.c foo").root
-        );
+        assert_eq!(parse("(regex:a.c) foo").root, parse("regex:a.c foo").root);
     }
 
     #[test]

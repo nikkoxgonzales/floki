@@ -347,6 +347,9 @@ pub struct FlokiApp {
     /// HKCU Run-key state (read from the registry at launch, the only
     /// source of truth), toggled from Settings.
     run_on_startup: bool,
+    /// Sign-in launch starts in the tray (`--minimized` in the Run value).
+    /// Kept while startup is off, so turning it back on restores it.
+    start_in_tray: bool,
     /// Settings window open state (session-only, never persisted).
     settings_open: bool,
     /// Active Settings window tab (session-only, never persisted).
@@ -412,7 +415,7 @@ impl FlokiApp {
         tray: Option<tray::TrayHandles>,
         theme: theme::ThemeMode,
         visible: bool,
-        run_on_startup: bool,
+        startup: Option<bool>,
     ) -> Self {
         let worker = Worker::spawn();
         // Kick off a status probe immediately so a missing service shows the
@@ -461,7 +464,8 @@ impl FlokiApp {
             autostart_recheck_at: Some(Instant::now()),
             show_down_details: false,
             quit_requested: false,
-            run_on_startup,
+            run_on_startup: startup.is_some(),
+            start_in_tray: startup.unwrap_or(true),
             settings_open: false,
             settings_tab: SettingsTab::General,
             targets_config: None,
@@ -743,9 +747,12 @@ impl FlokiApp {
     /// Run-on-startup write-through (Settings window General tab). Writes
     /// the HKCU Run key immediately; on failure the shown state is
     /// unchanged and `action_error` surfaces it.
-    fn set_run_on_startup(&mut self, on: bool) {
-        match startup::set_enabled(on) {
-            Ok(()) => self.run_on_startup = on,
+    fn set_startup(&mut self, on: bool, in_tray: bool) {
+        match startup::set_state(on.then_some(in_tray)) {
+            Ok(()) => {
+                self.run_on_startup = on;
+                self.start_in_tray = in_tray;
+            }
             Err(e) => {
                 self.action_error = Some(format!("Startup toggle failed: {e}"));
             }
@@ -1034,11 +1041,24 @@ impl FlokiApp {
         section(ui, "Startup");
         let mut on = self.run_on_startup;
         if ui.checkbox(&mut on, "Open Floki at sign-in").changed() {
-            self.set_run_on_startup(on);
+            self.set_startup(on, self.start_in_tray);
+        }
+        let mut tray = self.start_in_tray;
+        if ui
+            .add_enabled(
+                self.run_on_startup,
+                egui::Checkbox::new(&mut tray, "Start in the tray"),
+            )
+            .changed()
+        {
+            self.set_startup(true, tray);
         }
         caption(
             ui,
-            &format!("Starts in the tray, out of the way. {HOTKEY_TEXT} shows it."),
+            &format!(
+                "In the tray, Floki stays out of the way until {HOTKEY_TEXT} shows it. \
+                 Turn it off to open the window at sign-in."
+            ),
         );
         ui.add_space(6.0);
         let task = self.autostart_installed();
@@ -2781,7 +2801,7 @@ mod tests {
             None,
             theme::ThemeMode::Dark,
             true,
-            false,
+            None,
         )
     }
 

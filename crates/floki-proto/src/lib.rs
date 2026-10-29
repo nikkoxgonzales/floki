@@ -623,8 +623,14 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1500));
             drop(conn);
         });
-        std::env::set_var("FLOKI_PIPE", &pipe);
-        let mut client = Client::connect().unwrap();
+        // Connect by name, not through `FLOKI_PIPE`: the env var is
+        // process-wide and `pipe_name_default_and_env_override` runs in parallel.
+        let stream =
+            LocalSocketStream::connect(pipe.as_str().to_fs_name::<GenericFilePath>().unwrap())
+                .unwrap();
+        let mut client = Client {
+            reader: io::BufReader::new(stream),
+        };
         let started = std::time::Instant::now();
         let err = client
             .call_timeout(&Request::Status {}, std::time::Duration::from_millis(300))

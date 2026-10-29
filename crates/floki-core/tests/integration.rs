@@ -1997,10 +1997,7 @@ fn type_macros_expand_to_extension_lists() {
 #[test]
 fn drive_terms_limit_to_that_drive() {
     let ix = two_drive_index();
-    assert_eq!(
-        sorted_names(&ix, "d: file:"),
-        ["encore.FLAC", "song.mp3"]
-    );
+    assert_eq!(sorted_names(&ix, "d: file:"), ["encore.FLAC", "song.mp3"]);
     assert_eq!(sorted_names(&ix, "C: mp3"), Vec::<String>::new());
     assert_eq!(sorted_names(&ix, r"d:\music\live"), ["Live", "encore.FLAC"]);
 }
@@ -2011,6 +2008,12 @@ fn parent_matches_direct_children_only() {
     assert_eq!(sorted_names(&ix, r"parent:D:\Music"), ["Live", "song.mp3"]);
     assert_eq!(sorted_names(&ix, r"parent:d:\music\"), ["Live", "song.mp3"]);
     assert_eq!(sorted_names(&ix, "parent:D:"), ["Music"]);
-    assert_eq!(sorted_names(&ix, r"parent:C:\src rs"), ["lib.rs", "main.rs"]);
-    assert_eq!(sorted_names(&ix, r"parent:C:\nowhere"), Vec::<String>::new());
+    assert_eq!(
+        sorted_names(&ix, r"parent:C:\src rs"),
+        ["lib.rs", "main.rs"]
+    );
+    assert_eq!(
+        sorted_names(&ix, r"parent:C:\nowhere"),
+        Vec::<String>::new()
+    );
 }

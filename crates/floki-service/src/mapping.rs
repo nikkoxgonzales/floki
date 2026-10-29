@@ -362,7 +362,12 @@ mod tests {
             attrs: 0,
             name: "edited.txt".to_owned(),
         };
-        assert!(apply_usn_event(&mut index, 0, &UsnEvent::Overwrite(rec), 100));
+        assert!(apply_usn_event(
+            &mut index,
+            0,
+            &UsnEvent::Overwrite(rec),
+            100
+        ));
         let id = index.lookup(0, 300).expect("added from the close record");
         assert_eq!(index.name(id), Some("edited.txt"));
     }

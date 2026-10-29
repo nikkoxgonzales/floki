@@ -114,7 +114,8 @@ the window looks for `flokid.exe` next to itself.
    still incomplete.
 
 3. **Make it permanent** in Settings → General: turn on *Open Floki at
-   sign-in* (tray only) and *Start the indexer at sign-in*.
+   sign-in* and *Start the indexer at sign-in*. *Start in the tray* (on by
+   default) keeps the window hidden at sign-in until the hotkey shows it.
 
 Floki keeps its state in `%LOCALAPPDATA%\Floki\`: `index.bin` (saved every
 ten minutes and on shutdown), `flokid.log`, and `mcp.json` once MCP is set up.

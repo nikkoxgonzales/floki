@@ -448,7 +448,9 @@ fn cmd_status(json: bool) -> i32 {
                     let live = if vol.live { "yes" } else { "no" };
                     outln!(
                         "  {:<4} {:>10} {:>12}  {live}",
-                        vol.letter, vol.entries, vol.next_usn
+                        vol.letter,
+                        vol.entries,
+                        vol.next_usn
                     );
                 }
             }
@@ -532,7 +534,12 @@ fn cmd_volumes() -> i32 {
         Response::Status { volumes, .. } => {
             outln!(
                 "  {:<4} {:>10} {:>12}  {:<4} {:<7} {:<7}",
-                "vol", "entries", "next_usn", "live", "enabled", "monitor"
+                "vol",
+                "entries",
+                "next_usn",
+                "live",
+                "enabled",
+                "monitor"
             );
             for vol in &volumes {
                 let live = if vol.live { "yes" } else { "no" };
@@ -540,7 +547,9 @@ fn cmd_volumes() -> i32 {
                 let monitor = if vol.monitor { "yes" } else { "no" };
                 outln!(
                     "  {:<4} {:>10} {:>12}  {live:<4} {enabled:<7} {monitor:<7}",
-                    vol.letter, vol.entries, vol.next_usn
+                    vol.letter,
+                    vol.entries,
+                    vol.next_usn
                 );
             }
             0

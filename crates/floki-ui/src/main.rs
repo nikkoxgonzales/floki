@@ -113,9 +113,8 @@ fn main() -> anyhow::Result<()> {
             theme::apply(&cc.egui_ctx, initial);
             // Startup toggle: the HKCU Run key is the only source of truth
             // (a cached copy went stale whenever the key changed elsewhere).
-            let run_on_startup = startup::is_enabled();
             let mut app =
-                app::FlokiApp::new(hotkey, tray_handles, initial, !minimized, run_on_startup);
+                app::FlokiApp::new(hotkey, tray_handles, initial, !minimized, startup::state());
             if theme_arg.is_some() {
                 app.keep_stored_theme();
             }
